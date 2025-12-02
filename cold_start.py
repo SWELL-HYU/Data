@@ -5,7 +5,7 @@ from typing import List, Tuple, Dict
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-DEFAULT_MODEL = "jhgan/ko-sroberta-multitask"
+DEFAULT_MODEL = "sentence-transformers/distiluse-base-multilingual-cased-v2"
 
 _model = None
 
@@ -225,7 +225,7 @@ def find_similar_outfits(
 def search_similar_outfits(
     text1: str,
     text2: np.ndarray,
-    json_file: str = "final_data_남자_겨울_temp.json",
+    json_file: str = "Data/male/final_data_남자.json",
     n: int = 10,
     model_name: str = None
 ) -> List[Dict]:
@@ -292,12 +292,11 @@ def print_results(results: List[Dict], n: int = None):
 
 
 if __name__ == "__main__":
-    # 사용할 JSON 파일 (embedding 포함된 데이터)
-    # 실제 존재하는 파일명으로 설정 (예: final_data_남자_겨울_temp.json)
-    json_file = "final_data_남자_겨울_temp.json"
+    # 통합 남자 데이터(JSON, description_embedding 포함)
+    json_file = "Data/male/final_data_남자.json"
 
     # text1: 해시태그 5개를 직접 입력
-    text1 = input("해시태그 5개를 입력하세요 (공백/콤마로 구분): ").strip()
+    text1 = input("해시태그를 모두 입력하세요 (공백/콤마로 구분): ").strip()
 
     # outfit_ids 5개를 입력 받아 해당 코디의 description_embedding 을 합산
     ids_raw = input("콤마(,)로 구분된 outfit_id 5개를 입력하세요: ").strip()
@@ -310,7 +309,7 @@ if __name__ == "__main__":
         text1=text1,
         text2=image_embedding_sum,
         json_file=json_file,
-        n=10,
+        n=20,
     )
 
     # outfit_id만 추출

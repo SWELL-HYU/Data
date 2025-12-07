@@ -22,8 +22,8 @@
 
 생성된 데이터
 - 사용자 (Users): 100명
-- 상호작용 (Interactions): 7,903건
-- 시청 로그 (View Logs): 7,403건
-- 선호 태그 (Preferred Tags): 612건
-- 저장된 아이템 (Closet Items): 1,288건
+- 상호작용 (Interactions): 7,857건
+- 시청 로그 (View Logs): 7,357건
+- 선호 태그 (Preferred Tags): 627건
+- 저장된 아이템 (Closet Items): 1,194건
 </aside>

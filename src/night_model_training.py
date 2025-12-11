@@ -44,10 +44,30 @@ def load_item_embeddings_from_csv(csv_file: str) -> Dict[str, np.ndarray]:
     item_id_to_embedding = {}
     
     with open(csv_file, 'r', encoding='utf-8') as f:
+        # 첫 번째 줄 읽기 (헤더 확인용)
+        first_line = f.readline().strip()
+        
+        # Git merge conflict 마커나 잘못된 헤더 처리
+        if first_line.startswith('<<<<<<<') or first_line.startswith('=======') or first_line.startswith('>>>>>>>'):
+            # 다음 줄을 헤더로 사용
+            f.seek(0)  # 파일 처음으로
+            next(f)  # 첫 줄 건너뛰기
+        
         reader = csv.DictReader(f)
         for row in reader:
-            outfit_id = str(row['outfit_id']).strip()
-            embedding_str = row['outfit_embedding'].strip()
+            # None 체크 후 안전하게 접근
+            outfit_id = row.get('outfit_id')
+            embedding_str = row.get('outfit_embedding')
+            
+            # None이나 빈 값 필터링
+            if not outfit_id or not embedding_str:
+                continue
+            
+            outfit_id = str(outfit_id).strip()
+            embedding_str = str(embedding_str).strip()
+            
+            if not outfit_id or not embedding_str:
+                continue
             
             # 문자열을 리스트로 변환
             try:
@@ -82,13 +102,27 @@ def load_interactions_from_csv(csv_file: str, only_untrained: bool = True) -> Li
     with open(csv_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
+            # None 체크 후 strip
+            user_id = row.get('user_id') or ''
+            outfit_id = row.get('outfit_id') or ''
+            interaction = row.get('interaction') or ''
+            
+            # 문자열로 변환 후 strip
+            user_id = str(user_id).strip() if user_id is not None else ''
+            outfit_id = str(outfit_id).strip() if outfit_id is not None else ''
+            interaction = str(interaction).strip() if interaction is not None else ''
+            
+            # None이나 빈 값 필터링
+            if not user_id or not outfit_id or not interaction:
+                continue
+            
             # trained 컬럼이 없으면 False로 간주 (기존 데이터 호환성)
             trained = row.get('trained', 'False').lower() == 'true'
             
             if only_untrained and trained:
                 continue  # 이미 학습된 상호작용은 건너뛰기
             
-            interactions.append((row['user_id'], row['outfit_id'], row['interaction']))
+            interactions.append((user_id, outfit_id, interaction))
     return interactions
 
 
@@ -166,7 +200,7 @@ def train_night_model(
     hidden_dims: List[int] = None,
     learning_rate: float = 0.05,
     batch_size: int = 128,
-    num_epochs: int = 100,
+    num_epochs: int = 15,
     num_negatives: int = 1,
     test_ratio: float = 0.2,
     eval_k: int = 10,
@@ -349,31 +383,51 @@ def train_night_model(
     
     # 8. 밤 모델 임베딩을 초기값으로 사용 (선택적)
     night_user_embedding_path_for_init = night_user_embedding_path
+    initialized_count = 0
+    
     if os.path.exists(night_user_embedding_path_for_init):
-        print(f"\n[6] 밤 모델 임베딩을 초기값으로 사용: {night_user_embedding_path_for_init}")
-        with open(night_user_embedding_path_for_init, 'r', encoding='utf-8') as f:
-            night_embeddings = json.load(f)
-        initialized_count = 0
+        # 파일 크기 확인 (비어있는지 체크)
+        file_size = os.path.getsize(night_user_embedding_path_for_init)
         
-        for user_id_str, embedding_list in night_embeddings.items():
-            if user_id_str in user_id_to_index:
-                user_idx = user_id_to_index[user_id_str]
-                embedding = np.array(embedding_list)
+        if file_size > 0:
+            try:
+                print(f"\n[6] 밤 모델 임베딩을 초기값으로 사용: {night_user_embedding_path_for_init}")
+                with open(night_user_embedding_path_for_init, 'r', encoding='utf-8') as f:
+                    night_embeddings = json.load(f)
                 
-                # 512차원으로 맞춤
-                if embedding.shape[0] != embedding_dim:
-                    if embedding.shape[0] > embedding_dim:
-                        embedding = embedding[:embedding_dim]
+                # 딕셔너리가 비어있지 않은지 확인
+                if night_embeddings and isinstance(night_embeddings, dict):
+                    for user_id_str, embedding_list in night_embeddings.items():
+                        if user_id_str in user_id_to_index:
+                            user_idx = user_id_to_index[user_id_str]
+                            embedding = np.array(embedding_list)
+                            
+                            # 512차원으로 맞춤
+                            if embedding.shape[0] != embedding_dim:
+                                if embedding.shape[0] > embedding_dim:
+                                    embedding = embedding[:embedding_dim]
+                                else:
+                                    padding = np.zeros(embedding_dim - embedding.shape[0])
+                                    embedding = np.concatenate([embedding, padding])
+                            
+                            model.user_embedding.weight.data[user_idx] = torch.from_numpy(embedding).float()
+                            initialized_count += 1
+                    
+                    if initialized_count > 0:
+                        print(f"{initialized_count}개의 유저 임베딩 초기화됨 (밤 모델 임베딩 사용)")
                     else:
-                        padding = np.zeros(embedding_dim - embedding.shape[0])
-                        embedding = np.concatenate([embedding, padding])
-                
-                model.user_embedding.weight.data[user_idx] = torch.from_numpy(embedding).float()
-                initialized_count += 1
-        
-        print(f"{initialized_count}개의 유저 임베딩 초기화됨 (밤 모델 임베딩 사용)")
+                        print(f"밤 모델 임베딩 파일이 있지만 유효한 데이터가 없음. 랜덤 초기화 사용")
+                else:
+                    print(f"밤 모델 임베딩 파일이 비어있음. 랜덤 초기화 사용")
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                print(f"밤 모델 임베딩 파일 파싱 오류: {e}. 랜덤 초기화 사용")
+        else:
+            print(f"밤 모델 임베딩 파일이 비어있음. 랜덤 초기화 사용")
     else:
-        print(f"\n[6] 밤 모델 임베딩 없음. 랜덤 초기화 사용")
+        print(f"\n[6] 밤 모델 임베딩 파일 없음. 랜덤 초기화 사용")
+    
+    if initialized_count == 0:
+        print(f"모든 유저 임베딩을 랜덤 초기화로 사용")
     
     # 9. 학습 설정 (User Embedding만 학습)
     # Item Embedding은 이미 고정되어 있으므로 User Embedding만 옵티마이저에 포함

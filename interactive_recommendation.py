@@ -87,6 +87,9 @@ class InteractiveRecommendationSystem:
         self.csv_file = os.path.join(script_dir, "warm_start", "user_outfit_interaction.csv")
         self.view_time_csv_file = os.path.join(script_dir, "warm_start", "user_outfit_view_time.csv")
         
+        # 낮 모델 임베딩 저장 경로
+        self.day_user_embedding_path = os.path.join(script_dir, "warm_start", "day_user_embedding.json")
+        
         # CSV 파일이 없으면 생성
         if not os.path.exists(self.csv_file):
             os.makedirs(os.path.dirname(self.csv_file), exist_ok=True)
@@ -102,6 +105,30 @@ class InteractiveRecommendationSystem:
         
         # 사용자별 코디 보여준 시간 추적 (user_id -> {outfit_id: start_time})
         self.outfit_view_start_times: Dict[str, Dict[str, float]] = {}
+        
+        # 낮 모델 임베딩 저장을 위한 유틸리티 임포트
+        try:
+            from Data.src.user_embedding_utils import load_user_embeddings, save_user_embeddings
+            self.load_user_embeddings = load_user_embeddings
+            self.save_user_embeddings = save_user_embeddings
+        except ImportError:
+            # 같은 디렉토리에서 실행할 때
+            src_dir = os.path.join(script_dir, 'src')
+            if src_dir not in sys.path:
+                sys.path.insert(0, src_dir)
+            try:
+                from user_embedding_utils import load_user_embeddings, save_user_embeddings
+                self.load_user_embeddings = load_user_embeddings
+                self.save_user_embeddings = save_user_embeddings
+            except ImportError:
+                # 프로젝트 루트 기준
+                parent_dir = os.path.dirname(script_dir)
+                src_dir = os.path.join(parent_dir, 'Data', 'src')
+                if src_dir not in sys.path:
+                    sys.path.insert(0, src_dir)
+                from user_embedding_utils import load_user_embeddings, save_user_embeddings
+                self.load_user_embeddings = load_user_embeddings
+                self.save_user_embeddings = save_user_embeddings
         
         if VERBOSE:
             print(f"Loaded {len(self.data)} outfits")
@@ -355,6 +382,10 @@ class InteractiveRecommendationSystem:
                     writer = csv.writer(f)
                     writer.writerow([user_id, outfit_id, int(view_time_seconds)])
         
+        # 낮 모델 임베딩 저장 (실시간 업데이트)
+        # 밤 모델 임베딩은 건들지 않음
+        self._save_day_user_embedding(user_id, user_vector)
+        
         # 보여준 코디 목록에서 제거
         if user_id in self.user_shown_outfits:
             if str(outfit_id) in self.user_shown_outfits[user_id]:
@@ -368,6 +399,24 @@ class InteractiveRecommendationSystem:
         if VERBOSE:
             print(f"User {user_id} interacted with {outfit_id}: {interaction_type} "
                   f"(view_time: {view_time_seconds:.1f}s, adjusted weight: {weight * LEARNING_RATE:.3f})")
+    
+    def _save_day_user_embedding(self, user_id: str, user_vector: np.ndarray):
+        """
+        낮 모델 유저 임베딩을 저장합니다.
+        실시간으로 업데이트되며, 밤 모델 임베딩은 건들지 않습니다.
+        
+        Args:
+            user_id: 사용자 ID
+            user_vector: 업데이트된 사용자 벡터
+        """
+        # 기존 낮 모델 임베딩 로드
+        day_embeddings = self.load_user_embeddings(self.day_user_embedding_path)
+        
+        # 현재 유저 임베딩 업데이트
+        day_embeddings[user_id] = user_vector
+        
+        # 저장
+        self.save_user_embeddings(day_embeddings, self.day_user_embedding_path)
     def show_outfit(self, user_id: str, outfit_id: str):
         """
         코디를 사용자에게 보여준 것을 기록합니다 (상호작용하지 않은 경우).

@@ -15,7 +15,8 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from Data.src.neumf_model import NeMF
-from Data.src.user_embedding_utils import load_user_embeddings
+# user_embedding_utils 함수들을 인라인화
+import json
 
 # CSV 파일에서 임베딩 로드 함수
 def load_item_embeddings_from_csv(csv_file: str) -> Dict[str, np.ndarray]:
@@ -149,7 +150,8 @@ class HybridRecommender:
         
         # 낮 모델 유저 임베딩 로드 (있으면)
         if os.path.exists(self.day_user_embedding_path):
-            day_user_embeddings = load_user_embeddings(self.day_user_embedding_path)
+            with open(self.day_user_embedding_path, 'r', encoding='utf-8') as f:
+                day_user_embeddings = json.load(f)
             print(f"낮 모델 유저 임베딩 로드: {len(day_user_embeddings)}개")
             self.day_user_embeddings = day_user_embeddings
         else:
@@ -157,7 +159,11 @@ class HybridRecommender:
             self.day_user_embeddings = {}
         
         # 밤 모델 유저 임베딩 로드 (백업용)
-        night_user_embeddings = load_user_embeddings(self.night_user_embedding_path)
+        if os.path.exists(self.night_user_embedding_path):
+            with open(self.night_user_embedding_path, 'r', encoding='utf-8') as f:
+                night_user_embeddings = json.load(f)
+        else:
+            night_user_embeddings = {}
         self.night_user_embeddings = night_user_embeddings
         print(f"밤 모델 유저 임베딩 로드: {len(night_user_embeddings)}개")
     

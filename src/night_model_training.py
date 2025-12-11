@@ -28,7 +28,7 @@ from Data.src.evaluation import (
     evaluate_recommendations,
     create_ground_truth_from_interactions
 )
-from Data.src.user_embedding_utils import load_user_embeddings, save_user_embeddings
+# user_embedding_utils 함수들을 인라인화
 
 # CSV 파일에서 임베딩 로드 함수
 def load_item_embeddings_from_csv(csv_file: str) -> Dict[str, np.ndarray]:
@@ -67,12 +67,13 @@ def load_item_embeddings_from_csv(csv_file: str) -> Dict[str, np.ndarray]:
     return item_id_to_embedding
 
 
-def load_interactions_from_csv(csv_file: str) -> List[Tuple[str, str, str]]:
+def load_interactions_from_csv(csv_file: str, only_untrained: bool = True) -> List[Tuple[str, str, str]]:
     """
     CSV 파일에서 상호작용 데이터를 로드합니다.
     
     Args:
         csv_file: CSV 파일 경로
+        only_untrained: True면 trained=False인 상호작용만 로드, False면 모두 로드
     
     Returns:
         List[Tuple[user_id, outfit_id, interaction]]
@@ -81,8 +82,58 @@ def load_interactions_from_csv(csv_file: str) -> List[Tuple[str, str, str]]:
     with open(csv_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
+            # trained 컬럼이 없으면 False로 간주 (기존 데이터 호환성)
+            trained = row.get('trained', 'False').lower() == 'true'
+            
+            if only_untrained and trained:
+                continue  # 이미 학습된 상호작용은 건너뛰기
+            
             interactions.append((row['user_id'], row['outfit_id'], row['interaction']))
     return interactions
+
+
+def _update_trained_interactions(csv_file: str, trained_interactions: List[Tuple[str, str, str]]):
+    """
+    학습된 상호작용을 trained=True로 업데이트합니다.
+    
+    Args:
+        csv_file: CSV 파일 경로
+        trained_interactions: 학습에 사용된 상호작용 리스트 (user_id, outfit_id, interaction)
+    """
+    # 학습된 상호작용을 Set으로 변환 (빠른 조회)
+    trained_set = {(user_id, outfit_id, interaction) for user_id, outfit_id, interaction in trained_interactions}
+    
+    # CSV 파일 읽기
+    rows = []
+    with open(csv_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        
+        # trained 컬럼이 없으면 추가
+        if 'trained' not in fieldnames:
+            fieldnames = list(fieldnames) + ['trained']
+        
+        for row in reader:
+            user_id = row['user_id']
+            outfit_id = row['outfit_id']
+            interaction = row['interaction']
+            
+            # 학습된 상호작용이면 trained=True로 업데이트
+            if (user_id, outfit_id, interaction) in trained_set:
+                row['trained'] = 'True'
+            elif 'trained' not in row:
+                row['trained'] = 'False'  # 기존 데이터는 False로 설정
+            
+            rows.append(row)
+    
+    # CSV 파일 쓰기
+    with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    
+    trained_count = sum(1 for row in rows if row.get('trained', 'False').lower() == 'true')
+    print(f"학습된 상호작용 {trained_count}개를 trained=True로 업데이트 완료")
 
 
 def interaction_to_rating(interaction: str) -> float:
@@ -158,10 +209,14 @@ def train_night_model(
     print("밤 모델 학습 시작")
     print("=" * 80)
     
-    # 1. 상호작용 데이터 로드
+    # 1. 상호작용 데이터 로드 (학습되지 않은 상호작용만)
     print(f"\n[1] 상호작용 데이터 로드: {interaction_csv}")
-    interactions = load_interactions_from_csv(interaction_csv)
-    print(f"총 {len(interactions)}개의 상호작용 로드됨")
+    interactions = load_interactions_from_csv(interaction_csv, only_untrained=True)
+    print(f"총 {len(interactions)}개의 학습되지 않은 상호작용 로드됨")
+    
+    if len(interactions) == 0:
+        print("학습할 상호작용이 없습니다. 종료합니다.")
+        return
     
     # 2. 고유한 user_id와 item_id 추출
     unique_users = sorted(set([user_id for user_id, _, _ in interactions]))
@@ -292,13 +347,15 @@ def train_night_model(
     model.item_embedding.requires_grad_(False)
     print("Item Embedding 고정 완료 (학습 안 함)")
     
-    # 8. 낮 모델 임베딩을 초기값으로 사용 (선택적)
-    if os.path.exists(day_user_embedding_path):
-        print(f"\n[6] 낮 모델 임베딩을 초기값으로 사용: {day_user_embedding_path}")
-        day_embeddings = load_user_embeddings(day_user_embedding_path)
+    # 8. 밤 모델 임베딩을 초기값으로 사용 (선택적)
+    night_user_embedding_path_for_init = night_user_embedding_path
+    if os.path.exists(night_user_embedding_path_for_init):
+        print(f"\n[6] 밤 모델 임베딩을 초기값으로 사용: {night_user_embedding_path_for_init}")
+        with open(night_user_embedding_path_for_init, 'r', encoding='utf-8') as f:
+            night_embeddings = json.load(f)
         initialized_count = 0
         
-        for user_id_str, embedding_list in day_embeddings.items():
+        for user_id_str, embedding_list in night_embeddings.items():
             if user_id_str in user_id_to_index:
                 user_idx = user_id_to_index[user_id_str]
                 embedding = np.array(embedding_list)
@@ -314,9 +371,9 @@ def train_night_model(
                 model.user_embedding.weight.data[user_idx] = torch.from_numpy(embedding).float()
                 initialized_count += 1
         
-        print(f"{initialized_count}개의 유저 임베딩 초기화됨")
+        print(f"{initialized_count}개의 유저 임베딩 초기화됨 (밤 모델 임베딩 사용)")
     else:
-        print(f"\n[4] 낮 모델 임베딩 없음. 랜덤 초기화 사용")
+        print(f"\n[6] 밤 모델 임베딩 없음. 랜덤 초기화 사용")
     
     # 9. 학습 설정 (User Embedding만 학습)
     # Item Embedding은 이미 고정되어 있으므로 User Embedding만 옵티마이저에 포함
@@ -450,9 +507,44 @@ def train_night_model(
             embedding = model.user_embedding.weight[user_idx].cpu().numpy()
             night_user_embeddings[user_id_str] = embedding
     
-    save_user_embeddings(night_user_embeddings, night_user_embedding_path)
+    # User Embedding 저장
+    os.makedirs(os.path.dirname(night_user_embedding_path), exist_ok=True)
+    embeddings_dict = {
+        user_id: embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        for user_id, embedding in night_user_embeddings.items()
+    }
+    with open(night_user_embedding_path, 'w', encoding='utf-8') as f:
+        json.dump(embeddings_dict, f, ensure_ascii=False, indent=2)
     print(f"밤 모델 유저 임베딩 저장: {night_user_embedding_path}")
     print(f"Item Embedding은 저장하지 않음 (CSV 파일에서 로드: {outfit_embeddings_csv})")
+    
+    # 13. 학습된 상호작용을 trained=True로 업데이트
+    print(f"\n[11] 학습된 상호작용을 trained=True로 업데이트")
+    _update_trained_interactions(interaction_csv, interactions)
+    
+    # 14. 낮 임베딩도 밤 임베딩으로 최신화
+    print(f"\n[12] 낮 임베딩을 밤 임베딩으로 최신화")
+    if os.path.exists(day_user_embedding_path):
+        # 기존 낮 임베딩 로드
+        with open(day_user_embedding_path, 'r', encoding='utf-8') as f:
+            day_embeddings = json.load(f)
+        
+        # 밤 임베딩으로 업데이트 (밤 임베딩에 있는 사용자만)
+        updated_count = 0
+        for user_id_str, embedding_list in night_user_embeddings.items():
+            day_embeddings[user_id_str] = embedding_list
+            updated_count += 1
+        
+        # 저장
+        with open(day_user_embedding_path, 'w', encoding='utf-8') as f:
+            json.dump(day_embeddings, f, ensure_ascii=False, indent=2)
+        print(f"{updated_count}개의 낮 임베딩이 밤 임베딩으로 업데이트됨")
+    else:
+        # 낮 임베딩 파일이 없으면 밤 임베딩을 복사
+        os.makedirs(os.path.dirname(day_user_embedding_path), exist_ok=True)
+        with open(day_user_embedding_path, 'w', encoding='utf-8') as f:
+            json.dump(embeddings_dict, f, ensure_ascii=False, indent=2)
+        print(f"낮 임베딩 파일이 없어 밤 임베딩을 복사하여 생성: {day_user_embedding_path}")
     
     print("\n" + "=" * 80)
     print("밤 모델 학습 완료!")

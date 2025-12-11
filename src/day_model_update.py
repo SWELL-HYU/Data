@@ -23,9 +23,8 @@ if parent_dir not in sys.path:
 from Data.src.neumf_model import NeMF
 from Data.src.bpr_dataset import BPRDataset
 from Data.src.bpr_loss import BPRLoss
-from Data.src.user_embedding_utils import (
-    load_user_embeddings, save_user_embeddings
-)
+# user_embedding_utils 함수들을 인라인화
+import json
 
 # CSV 파일에서 임베딩 로드 함수
 def load_item_embeddings_from_csv(csv_file: str) -> Dict[str, np.ndarray]:
@@ -163,7 +162,8 @@ class DayModelUpdater:
         """
         if os.path.exists(self.day_user_embedding_path):
             print(f"기존 낮 모델 임베딩 로드: {self.day_user_embedding_path}")
-            day_embeddings = load_user_embeddings(self.day_user_embedding_path)
+            with open(self.day_user_embedding_path, 'r', encoding='utf-8') as f:
+                day_embeddings = json.load(f)
             
             # 기존 낮 모델 임베딩을 모델에 설정
             with torch.no_grad():
@@ -185,7 +185,11 @@ class DayModelUpdater:
             print(f"{len(day_embeddings)}개의 기존 낮 모델 임베딩 로드됨")
         else:
             print(f"낮 모델 임베딩 없음. 밤 모델 임베딩을 기반으로 초기화")
-            night_embeddings = load_user_embeddings(self.night_user_embedding_path)
+            if os.path.exists(self.night_user_embedding_path):
+                with open(self.night_user_embedding_path, 'r', encoding='utf-8') as f:
+                    night_embeddings = json.load(f)
+            else:
+                night_embeddings = {}
             
             # 밤 모델 임베딩을 낮 모델 임베딩으로 복사
             with torch.no_grad():
@@ -328,7 +332,14 @@ class DayModelUpdater:
                 embedding = self.model.user_embedding.weight[user_idx].cpu().numpy()
                 day_user_embeddings[user_id_str] = embedding
         
-        save_user_embeddings(day_user_embeddings, self.day_user_embedding_path)
+        # User Embedding 저장
+        os.makedirs(os.path.dirname(self.day_user_embedding_path), exist_ok=True)
+        embeddings_dict = {
+            user_id: embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+            for user_id, embedding in day_user_embeddings.items()
+        }
+        with open(self.day_user_embedding_path, 'w', encoding='utf-8') as f:
+            json.dump(embeddings_dict, f, ensure_ascii=False, indent=2)
         print(f"{len(day_user_embeddings)}개의 낮 모델 유저 임베딩 저장 완료")
 
 

@@ -90,12 +90,15 @@ class InteractiveRecommendationSystem:
         # 낮 모델 임베딩 저장 경로
         self.day_user_embedding_path = os.path.join(script_dir, "warm_start", "day_user_embedding.json")
         
+        # 밤 모델 임베딩 경로 (초기값으로 사용)
+        self.night_user_embedding_path = os.path.join(script_dir, "warm_start", "night_user_embedding.json")
+        
         # CSV 파일이 없으면 생성
         if not os.path.exists(self.csv_file):
             os.makedirs(os.path.dirname(self.csv_file), exist_ok=True)
             with open(self.csv_file, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['user_id', 'outfit_id', 'interaction'])
+                writer.writerow(['user_id', 'outfit_id', 'interaction', 'trained'])
         
         if not os.path.exists(self.view_time_csv_file):
             os.makedirs(os.path.dirname(self.view_time_csv_file), exist_ok=True)
@@ -106,29 +109,7 @@ class InteractiveRecommendationSystem:
         # 사용자별 코디 보여준 시간 추적 (user_id -> {outfit_id: start_time})
         self.outfit_view_start_times: Dict[str, Dict[str, float]] = {}
         
-        # 낮 모델 임베딩 저장을 위한 유틸리티 임포트
-        try:
-            from Data.src.user_embedding_utils import load_user_embeddings, save_user_embeddings
-            self.load_user_embeddings = load_user_embeddings
-            self.save_user_embeddings = save_user_embeddings
-        except ImportError:
-            # 같은 디렉토리에서 실행할 때
-            src_dir = os.path.join(script_dir, 'src')
-            if src_dir not in sys.path:
-                sys.path.insert(0, src_dir)
-            try:
-                from user_embedding_utils import load_user_embeddings, save_user_embeddings
-                self.load_user_embeddings = load_user_embeddings
-                self.save_user_embeddings = save_user_embeddings
-            except ImportError:
-                # 프로젝트 루트 기준
-                parent_dir = os.path.dirname(script_dir)
-                src_dir = os.path.join(parent_dir, 'Data', 'src')
-                if src_dir not in sys.path:
-                    sys.path.insert(0, src_dir)
-                from user_embedding_utils import load_user_embeddings, save_user_embeddings
-                self.load_user_embeddings = load_user_embeddings
-                self.save_user_embeddings = save_user_embeddings
+        # user_embedding_utils 함수들을 인라인화 (더 이상 import 불필요)
         
         if VERBOSE:
             print(f"Loaded {len(self.data)} outfits")
@@ -179,7 +160,7 @@ class InteractiveRecommendationSystem:
     
     def get_user_vector(self, user_id: str, cold_start_outfit_ids: Optional[List[str]] = None) -> np.ndarray:
         """
-        사용자 벡터를 가져옵니다. 없으면 초기화합니다.
+        사용자 벡터를 가져옵니다. 없으면 밤 임베딩에서 로드하거나 초기화합니다.
         
         Args:
             user_id: 사용자 ID
@@ -189,6 +170,27 @@ class InteractiveRecommendationSystem:
             사용자 벡터
         """
         if user_id not in self.user_vectors:
+            # 먼저 낮 임베딩에서 로드 시도
+            if os.path.exists(self.day_user_embedding_path):
+                with open(self.day_user_embedding_path, 'r', encoding='utf-8') as f:
+                    day_embeddings = json.load(f)
+                if user_id in day_embeddings:
+                    self.user_vectors[user_id] = np.array(day_embeddings[user_id])
+                    if VERBOSE:
+                        print(f"User {user_id} loaded from day embedding")
+                    return self.user_vectors[user_id]
+            
+            # 낮 임베딩이 없으면 밤 임베딩에서 로드 시도
+            if os.path.exists(self.night_user_embedding_path):
+                with open(self.night_user_embedding_path, 'r', encoding='utf-8') as f:
+                    night_embeddings = json.load(f)
+                if user_id in night_embeddings:
+                    self.user_vectors[user_id] = np.array(night_embeddings[user_id])
+                    if VERBOSE:
+                        print(f"User {user_id} loaded from night embedding (initialized day embedding)")
+                    return self.user_vectors[user_id]
+            
+            # 밤 임베딩도 없으면 콜드 스타트로 초기화
             self.initialize_user_vector(user_id, cold_start_outfit_ids)
         return self.user_vectors[user_id]
     
@@ -371,10 +373,10 @@ class InteractiveRecommendationSystem:
         
         # CSV 파일에 저장
         if save_to_csv:
-            # interaction CSV 저장
+            # interaction CSV 저장 (trained=False로 저장, 아직 학습되지 않음)
             with open(self.csv_file, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow([user_id, outfit_id, interaction_type])
+                writer.writerow([user_id, outfit_id, interaction_type, 'False'])
             
             # view_time CSV 저장 (preference는 제외)
             if interaction_type != 'preference':
@@ -410,13 +412,19 @@ class InteractiveRecommendationSystem:
             user_vector: 업데이트된 사용자 벡터
         """
         # 기존 낮 모델 임베딩 로드
-        day_embeddings = self.load_user_embeddings(self.day_user_embedding_path)
+        if os.path.exists(self.day_user_embedding_path):
+            with open(self.day_user_embedding_path, 'r', encoding='utf-8') as f:
+                day_embeddings = json.load(f)
+        else:
+            day_embeddings = {}
         
         # 현재 유저 임베딩 업데이트
-        day_embeddings[user_id] = user_vector
+        day_embeddings[user_id] = user_vector.tolist() if isinstance(user_vector, np.ndarray) else user_vector
         
         # 저장
-        self.save_user_embeddings(day_embeddings, self.day_user_embedding_path)
+        os.makedirs(os.path.dirname(self.day_user_embedding_path), exist_ok=True)
+        with open(self.day_user_embedding_path, 'w', encoding='utf-8') as f:
+            json.dump(day_embeddings, f, ensure_ascii=False, indent=2)
     def show_outfit(self, user_id: str, outfit_id: str):
         """
         코디를 사용자에게 보여준 것을 기록합니다 (상호작용하지 않은 경우).
